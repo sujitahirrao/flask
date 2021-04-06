@@ -49,7 +49,8 @@ Unreleased
     implementations in ``werkzeug.utils``. :pr:`3828`
 -   Some ``send_file`` parameters have been renamed, the old names are
     deprecated. ``attachment_filename`` is renamed to ``download_name``.
-    ``cache_timeout`` is renamed to ``max_age``. :pr:`3828`
+    ``cache_timeout`` is renamed to ``max_age``. ``add_etags`` is
+    renamed to ``etag``. :pr:`3828, 3883`
 -   ``send_file`` passes ``download_name`` even if
     ``as_attachment=False`` by using ``Content-Disposition: inline``.
     :pr:`3828`
@@ -59,6 +60,13 @@ Unreleased
     conditional requests instead of using a timed cache. :pr:`3828`
 -   ``helpers.safe_join`` is deprecated. Use
     ``werkzeug.utils.safe_join`` instead. :pr:`3828`
+-   The request context does route matching before opening the session.
+    This could allow a session interface to change behavior based on
+    ``request.endpoint``. :issue:`3776`
+-   Use Jinja's implementation of the ``|tojson`` filter. :issue:`3881`
+-   Add route decorators for common HTTP methods. For example,
+    ``@app.post("/login")`` is a shortcut for
+    ``@app.route("/login", methods=["POST"])``. :pr:`3907`
 
 
 Version 1.1.2

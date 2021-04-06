@@ -27,9 +27,9 @@ Incoming Request Data
 ---------------------
 
 .. autoclass:: Request
-   :members:
-   :inherited-members:
-   :exclude-members: json_module
+    :members:
+    :inherited-members:
+    :exclude-members: json_module
 
 .. attribute:: request
 
@@ -48,20 +48,9 @@ Response Objects
 ----------------
 
 .. autoclass:: flask.Response
-   :members: set_cookie, max_cookie_size, data, mimetype, is_json, get_json
-
-   .. attribute:: headers
-
-      A :class:`~werkzeug.datastructures.Headers` object representing the response headers.
-
-   .. attribute:: status
-
-      A string with a response status.
-
-   .. attribute:: status_code
-
-      The response status as integer.
-
+    :members:
+    :inherited-members:
+    :exclude-members: json_module
 
 Sessions
 --------
@@ -261,14 +250,15 @@ for easier customization. By default it handles some extra data types:
 -   :class:`~markupsafe.Markup` (or any object with a ``__html__``
     method) will call the ``__html__`` method to get a string.
 
-:func:`~htmlsafe_dumps` is also available as the ``|tojson`` template
-filter. The filter marks the output with ``|safe`` so it can be used
-inside ``script`` tags.
+Jinja's ``|tojson`` filter is configured to use Flask's :func:`dumps`
+function. The filter marks the output with ``|safe`` automatically. Use
+the filter to render data inside ``<script>`` tags.
 
 .. sourcecode:: html+jinja
 
     <script type=text/javascript>
-        renderChart({{ axis_data|tojson }});
+        const names = {{ names|tosjon }};
+        renderChart(names, {{ axis_data|tojson }});
     </script>
 
 .. autofunction:: jsonify
@@ -451,18 +441,32 @@ The following signals exist in Flask:
 
 .. data:: got_request_exception
 
-   This signal is sent when an exception happens during request processing.
-   It is sent *before* the standard exception handling kicks in and even
-   in debug mode, where no exception handling happens.  The exception
-   itself is passed to the subscriber as `exception`.
+    This signal is sent when an unhandled exception happens during
+    request processing, including when debugging. The exception is
+    passed to the subscriber as ``exception``.
 
-   Example subscriber::
+    This signal is not sent for
+    :exc:`~werkzeug.exceptions.HTTPException`, or other exceptions that
+    have error handlers registered, unless the exception was raised from
+    an error handler.
 
-        def log_exception(sender, exception, **extra):
-            sender.logger.debug('Got exception during processing: %s', exception)
+    This example shows how to do some extra logging if a theoretical
+    ``SecurityException`` was raised:
+
+    .. code-block:: python
 
         from flask import got_request_exception
-        got_request_exception.connect(log_exception, app)
+
+        def log_security_exception(sender, exception, **extra):
+            if not isinstance(exception, SecurityException):
+                return
+
+            security_logger.exception(
+                f"SecurityException at {request.url!r}",
+                exc_info=exception,
+            )
+
+        got_request_exception.connect(log_security_exception, app)
 
 .. data:: request_tearing_down
 

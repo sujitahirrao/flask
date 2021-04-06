@@ -16,7 +16,7 @@ from werkzeug.routing import Map
 from werkzeug.routing import RequestRedirect
 from werkzeug.routing import RoutingException
 from werkzeug.routing import Rule
-from werkzeug.wrappers import BaseResponse
+from werkzeug.wrappers import Response as BaseResponse
 
 from . import cli
 from . import json
@@ -29,7 +29,6 @@ from .globals import _request_ctx_stack
 from .globals import g
 from .globals import request
 from .globals import session
-from .helpers import find_package
 from .helpers import get_debug_flag
 from .helpers import get_env
 from .helpers import get_flashed_messages
@@ -40,6 +39,7 @@ from .json import jsonify
 from .logging import create_logger
 from .scaffold import _endpoint_from_view_func
 from .scaffold import _sentinel
+from .scaffold import find_package
 from .scaffold import Scaffold
 from .scaffold import setupmethod
 from .sessions import SecureCookieSessionInterface
@@ -278,7 +278,7 @@ class Flask(Scaffold):
     #:     This is a ``dict`` instead of an ``ImmutableDict`` to allow
     #:     easier configuration.
     #:
-    jinja_options = {"extensions": ["jinja2.ext.autoescape", "jinja2.ext.with_"]}
+    jinja_options = {}
 
     #: Default configuration parameters.
     default_config = ImmutableDict(
@@ -345,21 +345,6 @@ class Flask(Scaffold):
     #:
     #: .. versionadded:: 0.8
     session_interface = SecureCookieSessionInterface()
-
-    # TODO remove the next three attrs when Sphinx :inherited-members: works
-    # https://github.com/sphinx-doc/sphinx/issues/741
-
-    #: The name of the package or module that this app belongs to. Do not
-    #: change this once it is set by the constructor.
-    import_name = None
-
-    #: Location of the template files to be added to the template lookup.
-    #: ``None`` if templates should not be added.
-    template_folder = None
-
-    #: Absolute path to the package on the filesystem. Used to look up
-    #: resources contained in the package.
-    root_path = None
 
     def __init__(
         self,
@@ -430,13 +415,13 @@ class Flask(Scaffold):
         #: .. versionadded:: 0.11
         self.shell_context_processors = []
 
-        #: all the attached blueprints in a dictionary by name.  Blueprints
-        #: can be attached multiple times so this dictionary does not tell
-        #: you how often they got attached.
+        #: Maps registered blueprint names to blueprint objects. The
+        #: dict retains the order the blueprints were registered in.
+        #: Blueprints can be registered multiple times, this dict does
+        #: not track how often they were attached.
         #:
         #: .. versionadded:: 0.7
         self.blueprints = {}
-        self._blueprint_order = []
 
         #: a place where extensions can store application specific state.  For
         #: example this is where an extension could store database engines and
@@ -681,7 +666,7 @@ class Flask(Scaffold):
             session=session,
             g=g,
         )
-        rv.filters["tojson"] = json.tojson_filter
+        rv.policies["json.dumps_function"] = json.dumps
         return rv
 
     def create_global_jinja_loader(self):
@@ -997,7 +982,6 @@ class Flask(Scaffold):
             )
         else:
             self.blueprints[blueprint.name] = blueprint
-            self._blueprint_order.append(blueprint)
             first_registration = True
 
         blueprint.register(self, options, first_registration)
@@ -1007,7 +991,7 @@ class Flask(Scaffold):
 
         .. versionadded:: 0.11
         """
-        return iter(self._blueprint_order)
+        return self.blueprints.values()
 
     @setupmethod
     def add_url_rule(
@@ -1018,58 +1002,6 @@ class Flask(Scaffold):
         provide_automatic_options=None,
         **options,
     ):
-        """Connects a URL rule.  Works exactly like the :meth:`route`
-        decorator.  If a view_func is provided it will be registered with the
-        endpoint.
-
-        Basically this example::
-
-            @app.route('/')
-            def index():
-                pass
-
-        Is equivalent to the following::
-
-            def index():
-                pass
-            app.add_url_rule('/', 'index', index)
-
-        If the view_func is not provided you will need to connect the endpoint
-        to a view function like so::
-
-            app.view_functions['index'] = index
-
-        Internally :meth:`route` invokes :meth:`add_url_rule` so if you want
-        to customize the behavior via subclassing you only need to change
-        this method.
-
-        For more information refer to :ref:`url-route-registrations`.
-
-        .. versionchanged:: 0.2
-           `view_func` parameter added.
-
-        .. versionchanged:: 0.6
-           ``OPTIONS`` is added automatically as method.
-
-        :param rule: the URL rule as string
-        :param endpoint: the endpoint for the registered URL rule.  Flask
-                         itself assumes the name of the view function as
-                         endpoint
-        :param view_func: the function to call when serving a request to the
-                          provided endpoint
-        :param provide_automatic_options: controls whether the ``OPTIONS``
-            method should be added automatically. This can also be controlled
-            by setting the ``view_func.provide_automatic_options = False``
-            before adding the rule.
-        :param options: the options to be forwarded to the underlying
-                        :class:`~werkzeug.routing.Rule` object.  A change
-                        to Werkzeug is handling of method options.  methods
-                        is a list of methods this rule should be limited
-                        to (``GET``, ``POST`` etc.).  By default a rule
-                        just listens for ``GET`` (and implicitly ``HEAD``).
-                        Starting with Flask 0.6, ``OPTIONS`` is implicitly
-                        added and handled by the standard request handling.
-        """
         if endpoint is None:
             endpoint = _endpoint_from_view_func(view_func)
         options["endpoint"] = endpoint
@@ -1292,7 +1224,7 @@ class Flask(Scaffold):
             (request.blueprint, None),
             (None, None),
         ):
-            handler_map = self.error_handler_spec.setdefault(name, {}).get(c)
+            handler_map = self.error_handler_spec[name][c]
 
             if not handler_map:
                 continue
@@ -1386,17 +1318,10 @@ class Flask(Scaffold):
 
         .. versionadded:: 0.7
         """
-        if isinstance(e, BadRequestKeyError):
-            if self.debug or self.config["TRAP_BAD_REQUEST_ERRORS"]:
-                e.show_exception = True
-
-                # Werkzeug < 0.15 doesn't add the KeyError to the 400
-                # message, add it in manually.
-                # TODO: clean up once Werkzeug >= 0.15.5 is required
-                if e.args[0] not in e.get_description():
-                    e.description = f"KeyError: {e.args[0]!r}"
-            elif not hasattr(BadRequestKeyError, "show_exception"):
-                e.args = ()
+        if isinstance(e, BadRequestKeyError) and (
+            self.debug or self.config["TRAP_BAD_REQUEST_ERRORS"]
+        ):
+            e.show_exception = True
 
         if isinstance(e, HTTPException) and not self.trap_http_exception(e):
             return self.handle_http_exception(e)
@@ -1425,12 +1350,6 @@ class Flask(Scaffold):
         always receive the ``InternalServerError``. The original
         unhandled exception is available as ``e.original_exception``.
 
-        .. note::
-            Prior to Werkzeug 1.0.0, ``InternalServerError`` will not
-            always have an ``original_exception`` attribute. Use
-            ``getattr(e, "original_exception", None)`` to simulate the
-            behavior for compatibility.
-
         .. versionchanged:: 1.1.0
             Always passes the ``InternalServerError`` instance to the
             handler, setting ``original_exception`` to the unhandled
@@ -1454,10 +1373,7 @@ class Flask(Scaffold):
             raise e
 
         self.log_exception(exc_info)
-        server_error = InternalServerError()
-        # TODO: pass as param when Werkzeug>=1.0.0 is required
-        # TODO: also remove note about this from docstring and docs
-        server_error.original_exception = e
+        server_error = InternalServerError(original_exception=e)
         handler = self._find_error_handler(server_error)
 
         if handler is not None:
@@ -1763,10 +1679,10 @@ class Flask(Scaffold):
 
         .. versionadded:: 0.7
         """
-        funcs = self.url_default_functions.get(None, ())
+        funcs = self.url_default_functions[None]
         if "." in endpoint:
             bp = endpoint.rsplit(".", 1)[0]
-            funcs = chain(funcs, self.url_default_functions.get(bp, ()))
+            funcs = chain(funcs, self.url_default_functions[bp])
         for func in funcs:
             func(endpoint, values)
 
@@ -1804,13 +1720,13 @@ class Flask(Scaffold):
 
         bp = _request_ctx_stack.top.request.blueprint
 
-        funcs = self.url_value_preprocessors.get(None, ())
+        funcs = self.url_value_preprocessors[None]
         if bp is not None and bp in self.url_value_preprocessors:
             funcs = chain(funcs, self.url_value_preprocessors[bp])
         for func in funcs:
             func(request.endpoint, request.view_args)
 
-        funcs = self.before_request_funcs.get(None, ())
+        funcs = self.before_request_funcs[None]
         if bp is not None and bp in self.before_request_funcs:
             funcs = chain(funcs, self.before_request_funcs[bp])
         for func in funcs:
@@ -1867,7 +1783,7 @@ class Flask(Scaffold):
         """
         if exc is _sentinel:
             exc = sys.exc_info()[1]
-        funcs = reversed(self.teardown_request_funcs.get(None, ()))
+        funcs = reversed(self.teardown_request_funcs[None])
         bp = _request_ctx_stack.top.request.blueprint
         if bp is not None and bp in self.teardown_request_funcs:
             funcs = chain(funcs, reversed(self.teardown_request_funcs[bp]))
@@ -2034,9 +1950,7 @@ class Flask(Scaffold):
 
     def __call__(self, environ, start_response):
         """The WSGI server calls the Flask application object as the
-        WSGI application. This calls :meth:`wsgi_app` which can be
-        wrapped to applying middleware."""
+        WSGI application. This calls :meth:`wsgi_app`, which can be
+        wrapped to apply middleware.
+        """
         return self.wsgi_app(environ, start_response)
-
-    def __repr__(self):
-        return f"<{type(self).__name__} {self.name!r}>"

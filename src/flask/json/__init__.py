@@ -3,9 +3,8 @@ import json as _json
 import uuid
 import warnings
 from datetime import date
-from datetime import datetime
 
-from markupsafe import Markup
+from jinja2.utils import htmlsafe_json_dumps as _jinja_htmlsafe_dumps
 from werkzeug.http import http_date
 
 from ..globals import current_app
@@ -41,10 +40,8 @@ class JSONEncoder(_json.JSONEncoder):
         overriding how basic types like ``str`` or ``list`` are
         serialized, they are handled before this method.
         """
-        if isinstance(o, datetime):
-            return http_date(o.utctimetuple())
         if isinstance(o, date):
-            return http_date(o.timetuple())
+            return http_date(o)
         if isinstance(o, uuid.UUID):
             return str(o)
         if dataclasses and dataclasses.is_dataclass(o):
@@ -234,30 +231,28 @@ def load(fp, app=None, **kwargs):
     return _json.load(fp, **kwargs)
 
 
-_htmlsafe_map = str.maketrans(
-    {"<": "\\u003c", ">": "\\u003e", "&": "\\u0026", "'": "\\u0027"}
-)
-
-
 def htmlsafe_dumps(obj, **kwargs):
-    """Serialize an object to a string of JSON, replacing HTML-unsafe
-    characters with Unicode escapes. Otherwise behaves the same as
-    :func:`dumps`.
+    """Serialize an object to a string of JSON with :func:`dumps`, then
+    replace HTML-unsafe characters with Unicode escapes and mark the
+    result safe with :class:`~markupsafe.Markup`.
 
-    This is available in templates as the ``|tojson`` filter, which will
-    also mark the result with ``|safe``.
+    This is available in templates as the ``|tojson`` filter.
 
     The returned string is safe to render in HTML documents and
     ``<script>`` tags. The exception is in HTML attributes that are
     double quoted; either use single quotes or the ``|forceescape``
     filter.
 
+    .. versionchanged:: 2.0
+        Uses :func:`jinja2.utils.htmlsafe_json_dumps`. The returned
+        value is marked safe by wrapping in :class:`~markupsafe.Markup`.
+
     .. versionchanged:: 0.10
         Single quotes are escaped, making this safe to use in HTML,
         ``<script>`` tags, and single-quoted attributes without further
         escaping.
     """
-    return dumps(obj, **kwargs).translate(_htmlsafe_map)
+    return _jinja_htmlsafe_dumps(obj, dumps=dumps, **kwargs)
 
 
 def htmlsafe_dump(obj, fp, **kwargs):
@@ -335,7 +330,3 @@ def jsonify(*args, **kwargs):
         f"{dumps(data, indent=indent, separators=separators)}\n",
         mimetype=current_app.config["JSONIFY_MIMETYPE"],
     )
-
-
-def tojson_filter(obj, **kwargs):
-    return Markup(htmlsafe_dumps(obj, **kwargs))

@@ -48,6 +48,23 @@ def test_options_on_multiple_rules(app, client):
     assert sorted(rv.allow) == ["GET", "HEAD", "OPTIONS", "POST", "PUT"]
 
 
+@pytest.mark.parametrize("method", ["get", "post", "put", "delete", "patch"])
+def test_method_route(app, client, method):
+    method_route = getattr(app, method)
+    client_method = getattr(client, method)
+
+    @method_route("/")
+    def hello():
+        return "Hello"
+
+    assert client_method("/").data == b"Hello"
+
+
+def test_method_route_no_methods(app):
+    with pytest.raises(TypeError):
+        app.get("/", methods=["GET", "POST"])
+
+
 def test_provide_automatic_options_attr():
     app = flask.Flask(__name__)
 
@@ -1520,6 +1537,8 @@ def test_server_name_subdomain():
     assert rv.data == b"subdomain"
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_exception_propagation(app, client):
     def apprunner(config_key):
         @app.route("/")

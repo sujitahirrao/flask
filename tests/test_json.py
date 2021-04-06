@@ -129,19 +129,16 @@ def test_jsonify_arrays(app, client):
         assert flask.json.loads(rv.data) == a_list
 
 
-def test_jsonifytypes(app, client):
-    """Test jsonify with datetime.date and datetime.datetime types."""
-    test_dates = (
-        datetime.datetime(1973, 3, 11, 6, 30, 45),
-        datetime.date(1975, 1, 5),
-    )
+@pytest.mark.parametrize(
+    "value", [datetime.datetime(1973, 3, 11, 6, 30, 45), datetime.date(1975, 1, 5)]
+)
+def test_jsonify_datetime(app, client, value):
+    @app.route("/")
+    def index():
+        return flask.jsonify(value=value)
 
-    for i, d in enumerate(test_dates):
-        url = f"/datetest{i}"
-        app.add_url_rule(url, str(i), lambda val=d: flask.jsonify(x=val))
-        rv = client.get(url)
-        assert rv.mimetype == "application/json"
-        assert flask.json.loads(rv.data)["x"] == http_date(d.timetuple())
+    r = client.get()
+    assert r.json["value"] == http_date(value)
 
 
 class FixedOffset(datetime.tzinfo):
@@ -204,24 +201,17 @@ def test_json_attr(app, client):
     assert rv.data == b"3"
 
 
-def test_template_escaping(app, req_ctx):
-    render = flask.render_template_string
-    rv = flask.json.htmlsafe_dumps("</script>")
-    assert rv == '"\\u003c/script\\u003e"'
-    rv = render('{{ "</script>"|tojson }}')
-    assert rv == '"\\u003c/script\\u003e"'
-    rv = render('{{ "<\0/script>"|tojson }}')
-    assert rv == '"\\u003c\\u0000/script\\u003e"'
-    rv = render('{{ "<!--<script>"|tojson }}')
-    assert rv == '"\\u003c!--\\u003cscript\\u003e"'
-    rv = render('{{ "&"|tojson }}')
-    assert rv == '"\\u0026"'
-    rv = render('{{ "\'"|tojson }}')
-    assert rv == '"\\u0027"'
-    rv = render(
-        "<a ng-data='{{ data|tojson }}'></a>", data={"x": ["foo", "bar", "baz'"]}
+def test_tojson_filter(app, req_ctx):
+    # The tojson filter is tested in Jinja, this confirms that it's
+    # using Flask's dumps.
+    rv = flask.render_template_string(
+        "const data = {{ data|tojson }};",
+        data={"name": "</script>", "time": datetime.datetime(2021, 2, 1, 7, 15)},
     )
-    assert rv == '<a ng-data=\'{"x": ["foo", "bar", "baz\\u0027"]}\'></a>'
+    assert rv == (
+        'const data = {"name": "\\u003c/script\\u003e",'
+        ' "time": "Mon, 01 Feb 2021 07:15:00 GMT"};'
+    )
 
 
 def test_json_customization(app, client):
