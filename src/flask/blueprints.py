@@ -1,3 +1,4 @@
+from collections import defaultdict
 from functools import update_wrapper
 
 from .scaffold import _endpoint_from_view_func
@@ -44,6 +45,8 @@ class BlueprintSetupState:
         #: blueprint.
         self.url_prefix = url_prefix
 
+        self.name_prefix = self.options.get("name_prefix", "")
+
         #: A dictionary with URL defaults that is added to each and every
         #: URL that was defined with the blueprint.
         self.url_defaults = dict(self.blueprint.url_values_defaults)
@@ -67,7 +70,7 @@ class BlueprintSetupState:
             defaults = dict(defaults, **options.pop("defaults"))
         self.app.add_url_rule(
             rule,
-            f"{self.blueprint.name}.{endpoint}",
+            f"{self.name_prefix}{self.blueprint.name}.{endpoint}",
             view_func,
             defaults=defaults,
             **options,
@@ -167,6 +170,7 @@ class Blueprint(Scaffold):
 
         self.url_values_defaults = url_defaults
         self.cli_group = cli_group
+        self._blueprints = []
 
     def _is_setup_finished(self):
         return self.warn_on_modifications and self._got_registered_once
@@ -209,7 +213,16 @@ class Blueprint(Scaffold):
         """
         return BlueprintSetupState(self, app, options, first_registration)
 
-    def register(self, app, options, first_registration=False):
+    def register_blueprint(self, blueprint, **options):
+        """Register a :class:`~flask.Blueprint` on this blueprint. Keyword
+        arguments passed to this method will override the defaults set
+        on the blueprint.
+
+        .. versionadded:: 2.0
+        """
+        self._blueprints.append((blueprint, options))
+
+    def register(self, app, options):
         """Called by :meth:`Flask.register_blueprint` to register all
         views and callbacks registered on the blueprint with the
         application. Creates a :class:`.BlueprintSetupState` and calls
@@ -222,6 +235,20 @@ class Blueprint(Scaffold):
         :param first_registration: Whether this is the first time this
             blueprint has been registered on the application.
         """
+        first_registration = False
+
+        if self.name in app.blueprints:
+            assert app.blueprints[self.name] is self, (
+                "A name collision occurred between blueprints"
+                f" {self!r} and {app.blueprints[self.name]!r}."
+                f" Both share the same name {self.name!r}."
+                f" Blueprints that are created on the fly need unique"
+                f" names."
+            )
+        else:
+            app.blueprints[self.name] = self
+            first_registration = True
+
         self._got_registered_once = True
         state = self.make_setup_state(app, options, first_registration)
 
@@ -235,41 +262,70 @@ class Blueprint(Scaffold):
         # Merge blueprint data into parent.
         if first_registration:
 
-            def extend(bp_dict, parent_dict):
+            def extend(bp_dict, parent_dict, ensure_sync=False):
                 for key, values in bp_dict.items():
                     key = self.name if key is None else f"{self.name}.{key}"
+
+                    if ensure_sync:
+                        values = [app.ensure_sync(func) for func in values]
+
                     parent_dict[key].extend(values)
 
-            def update(bp_dict, parent_dict):
-                for key, value in bp_dict.items():
-                    key = self.name if key is None else f"{self.name}.{key}"
-                    parent_dict[key] = value
+            for key, value in self.error_handler_spec.items():
+                key = self.name if key is None else f"{self.name}.{key}"
+                value = defaultdict(
+                    dict,
+                    {
+                        code: {
+                            exc_class: app.ensure_sync(func)
+                            for exc_class, func in code_values.items()
+                        }
+                        for code, code_values in value.items()
+                    },
+                )
+                app.error_handler_spec[key] = value
 
-            app.view_functions.update(self.view_functions)
-            extend(self.before_request_funcs, app.before_request_funcs)
-            extend(self.after_request_funcs, app.after_request_funcs)
-            extend(self.teardown_request_funcs, app.teardown_request_funcs)
+            for endpoint, func in self.view_functions.items():
+                app.view_functions[endpoint] = app.ensure_sync(func)
+
+            extend(
+                self.before_request_funcs, app.before_request_funcs, ensure_sync=True
+            )
+            extend(self.after_request_funcs, app.after_request_funcs, ensure_sync=True)
+            extend(
+                self.teardown_request_funcs,
+                app.teardown_request_funcs,
+                ensure_sync=True,
+            )
             extend(self.url_default_functions, app.url_default_functions)
             extend(self.url_value_preprocessors, app.url_value_preprocessors)
             extend(self.template_context_processors, app.template_context_processors)
-            update(self.error_handler_spec, app.error_handler_spec)
 
         for deferred in self.deferred_functions:
             deferred(state)
 
-        if not self.cli.commands:
-            return
-
         cli_resolved_group = options.get("cli_group", self.cli_group)
 
-        if cli_resolved_group is None:
-            app.cli.commands.update(self.cli.commands)
-        elif cli_resolved_group is _sentinel:
-            self.cli.name = self.name
-            app.cli.add_command(self.cli)
-        else:
-            self.cli.name = cli_resolved_group
-            app.cli.add_command(self.cli)
+        if self.cli.commands:
+            if cli_resolved_group is None:
+                app.cli.commands.update(self.cli.commands)
+            elif cli_resolved_group is _sentinel:
+                self.cli.name = self.name
+                app.cli.add_command(self.cli)
+            else:
+                self.cli.name = cli_resolved_group
+                app.cli.add_command(self.cli)
+
+        for blueprint, bp_options in self._blueprints:
+            url_prefix = options.get("url_prefix", "")
+            if "url_prefix" in bp_options:
+                url_prefix = (
+                    url_prefix.rstrip("/") + "/" + bp_options["url_prefix"].lstrip("/")
+                )
+
+            bp_options["url_prefix"] = url_prefix
+            bp_options["name_prefix"] = options.get("name_prefix", "") + self.name + "."
+            blueprint.register(app, bp_options)
 
     def add_url_rule(self, rule, endpoint=None, view_func=None, **options):
         """Like :meth:`Flask.add_url_rule` but for a blueprint.  The endpoint for
@@ -380,7 +436,9 @@ class Blueprint(Scaffold):
         before each request, even if outside of a blueprint.
         """
         self.record_once(
-            lambda s: s.app.before_request_funcs.setdefault(None, []).append(f)
+            lambda s: s.app.before_request_funcs.setdefault(None, []).append(
+                s.app.ensure_sync(f)
+            )
         )
         return f
 
@@ -388,7 +446,9 @@ class Blueprint(Scaffold):
         """Like :meth:`Flask.before_first_request`.  Such a function is
         executed before the first request to the application.
         """
-        self.record_once(lambda s: s.app.before_first_request_funcs.append(f))
+        self.record_once(
+            lambda s: s.app.before_first_request_funcs.append(s.app.ensure_sync(f))
+        )
         return f
 
     def after_app_request(self, f):
@@ -396,7 +456,9 @@ class Blueprint(Scaffold):
         is executed after each request, even if outside of the blueprint.
         """
         self.record_once(
-            lambda s: s.app.after_request_funcs.setdefault(None, []).append(f)
+            lambda s: s.app.after_request_funcs.setdefault(None, []).append(
+                s.app.ensure_sync(f)
+            )
         )
         return f
 
@@ -442,4 +504,15 @@ class Blueprint(Scaffold):
         self.record_once(
             lambda s: s.app.url_default_functions.setdefault(None, []).append(f)
         )
+        return f
+
+    def ensure_sync(self, f):
+        """Ensure the function is synchronous.
+
+        Override if you would like custom async to sync behaviour in
+        this blueprint. Otherwise the app's
+        :meth:`~flask.Flask.ensure_sync` is used.
+
+        .. versionadded:: 2.0
+        """
         return f
